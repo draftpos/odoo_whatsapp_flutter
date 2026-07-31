@@ -1,0 +1,202 @@
+﻿=== LINES 1-200 (main dispatch logic) ===
+# -*- coding: utf-8 -*-
+##############################################################################
+#
+#    OpenERP, Open Source Management Solution
+#    Copyright (C) 2015 DevIntelle Consulting Service Pvt.Ltd (<http://www.devintellecs.com>).
+#
+#    For Module Support : devintelle@gmail.com  or Skype : devintelle
+#
+##############################################################################
+import ast
+import json
+import logging
+import re as re_module
+import time
+import requests as req_lib
+from datetime import datetime
+from markupsafe import Markup, escape
+
+from odoo import api, fields, models, _
+
+from odoo.addons.dev_whatsapp_chatbot_ent.tools import send_helpers
+
+_logger = logging.getLogger(__name__)
+
+# Recursion guard ΓÇö caps how deep auto-advancing nodes can chain per inbound.
+MAX_EXECUTION_DEPTH = 50
+
+# Date format ΓåÆ regex for dynamic date validation
+DATE_FORMAT_PATTERNS = {
+    'DD-MM-YYYY': r'^\d{2}-\d{2}-\d{4}$',
+    'MM-DD-YYYY': r'^\d{2}-\d{2}-\d{4}$',
+    'YYYY-MM-DD': r'^\d{4}-\d{2}-\d{2}$',
+    'DD/MM/YYYY': r'^\d{2}/\d{2}/\d{4}$',
+    'MM/DD/YYYY': r'^\d{2}/\d{2}/\d{4}$',
+    'YYYY/MM/DD': r'^\d{4}/\d{2}/\d{2}$',
+}
+
+# Date format ΓåÆ strptime format
+DATE_FORMAT_STRPTIME = {
+    'DD-MM-YYYY': '%d-%m-%Y',
+    'MM-DD-YYYY': '%m-%d-%Y',
+    'YYYY-MM-DD': '%Y-%m-%d',
+    'DD/MM/YYYY': '%d/%m/%Y',
+    'MM/DD/YYYY': '%m/%d/%Y',
+    'YYYY/MM/DD': '%Y/%m/%d',
+}
+
+# Message types this processor accepts on inbound logging
+_LOGGABLE_INBOUND_TYPES = ('text', 'image', 'video', 'audio', 'document', 'location', 'interactive')
+
+
+class WaChatbotProcessor(models.TransientModel):
+    _name = 'wa.chatbot.processor'
+    _description = 'WhatsApp Chatbot FSM Processor'
+
+    # =========================================================================
+    # ENTRY POINT
+    # =========================================================================
+
+    @api.model
+    def _try_handle_inbound(self, account, value):
+        """
+        Called from whatsapp.account._process_messages override.
+
+        Returns True  ΓåÆ chatbot consumed the payload; stock must NOT re-process.
+        Returns False ΓåÆ stock should run normally (no chatbot, or handed-off
+                        session, or processor error).
+        """
+        messages = (value or {}).get('messages') or []
+        if not messages:
+            return False
+
+        chatbot = self._find_active_chatbot(account, messages)
+        if not chatbot:
+            return False
+
+        contacts = (value or {}).get('contacts') or []
+        
+        profile_name = ''
+        if contacts:
+            profile_name = contacts[0].get('profile', {}).get('name', '') or ''
+       
+        # Pre-scan: if ANY message belongs to a handed-off session, fall through
+        # to stock so the human agent sees the message in Discuss. Webhooks
+        # typically deliver one message at a time, so this is an all-or-nothing
+        # decision per batch.
+        for msg in messages:
+            phone = self._normalize_phone(msg.get('from', ''))
+            if not phone:
+                continue
+            handed_off = self.env['wa.chatbot.session'].sudo().search([
+                ('chatbot_id', '=', chatbot.id),
+                ('phone', '=', phone),
+                ('state', '=', 'handed_off'),
+            ], limit=1)
+            if handed_off:
+                return False
+
+        for msg in messages:
+            try:
+                with self.env.cr.savepoint():
+                    self._handle_single_message(account, chatbot, msg, profile_name)
+            except Exception:
+                _logger.exception(
+                    "Chatbot processor failed on account=%s msg=%s ΓÇö falling through to stock",
+                    account.id, msg.get('id'),
+                )
+                return False
+
+        return True
+
+    def _handle_single_message(self, account, chatbot, msg, profile_name):
+        """Process one message from the webhook payload."""
+
+        phone = self._normalize_phone(msg.get('from', ''))
+        if not phone:
+            return
+
+        user_input = self._extract_user_input(msg)
+        msg_type = msg.get('type', 'text')
+        wamid = msg.get('id', '')
+
+        Session = self.env['wa.chatbot.session'].sudo()
+        session = Session.search([
+            ('chatbot_id', '=', chatbot.id),
+            ('phone', '=', phone),
+            ('state', 'in', ('active', 'paused')),
+        ], limit=1, order='last_activity_at desc')
+
+        # Working hours guard
+        if not chatbot._is_within_working_hours():
+            if chatbot.outside_hours_message:
+                send_helpers.send_text(self.env, account, phone, chatbot.outside_hours_message, session=session)
+            self._log_inbound_message(account, phone, wamid, msg_type, user_input)
+            return
+
+        # Global keywords interrupt any running flow
+        keyword_match = self._check_keywords(chatbot, user_input, is_global=True)
+        if keyword_match:
+            self._handle_keyword_match(
+                chatbot, session, phone, profile_name or phone,
+                keyword_match, user_input, account, wamid, msg_type,
+            )
+            return
+
+        # No session or expired/closed: try non-global keywords or default flow
+        if not session or session.state in ('expired', 'closed'):
+            keyword_match = self._check_keywords(chatbot, user_input, is_global=False)
+            if keyword_match:
+                self._handle_keyword_match(
+                    chatbot, None, phone, profile_name or phone,
+                    keyword_match, user_input, account, wamid, msg_type,
+                )
+                return
+
+            session = self._create_session(chatbot, phone, profile_name, account)
+            self._log_session_message(session, 'inbound', user_input, msg_type=msg_type, wamid=wamid, account=account)
+
+            if chatbot.welcome_message:
+                import logging
+                _logger.error("CHATBOT_PROCESSOR DEBUG: calling send_text for welcome_message!")
+                wa_msg = send_helpers.send_text(self.env, account, phone, chatbot.welcome_message, session=session)
+                self._log_session_message(session, 'outbound', chatbot.welcome_message, wa_msg=wa_msg)
+
+            start_node = chatbot.default_flow_id.node_ids.filtered(lambda n: n.is_entry)
+            if start_node:
+                session.current_flow_id = chatbot.default_flow_id.id
+                session.current_node_id = start_node[0].id
+                self._execute_node(session, start_node[0], account=account)
+            return
+
+        # Active session: advance state + process at current node
+        session.write({
+            'last_activity_at': fields.Datetime.now(),
+            'message_count': session.message_count + 1,
+        })
+        session.set_variable('last_input', user_input)
+        session.set_variable('message_count', session.message_count)
+
+        self._log_session_message(session, 'inbound', user_input, msg_type=msg_type, wamid=wamid, account=account)
+
+        current_node = session.current_node_id
+        if not current_node:
+            start_node = session.current_flow_id.node_ids.filtered(lambda n: n.is_entry)
+            if start_node:
+                self._execute_node(session, start_node[0], account=account)
+            return
+
+        # Interactive nodes may want the button/list ID rather than the label
+        if current_node.node_type == 'interactive':
+            interactive_id = self._extract_interactive_id(msg)
+            if interactive_id:
+                user_input = interactive_id
+
+        self._process_user_input(session, current_node, user_input, account)
+
+    # =========================================================================
+    # FSM CORE
+    # =========================================================================
+
+

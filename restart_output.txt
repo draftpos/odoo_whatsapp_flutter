@@ -1,0 +1,9 @@
+﻿Restarting Odoo container...
+ Container odoo_demo1_havano_pro_pknuzuhckrvwadhoboithcke Restarting 
+ Container odoo_demo1_havano_pro_pknuzuhckrvwadhoboithcke Started 
+
+
+Container status after restart:
+NAMES                                            STATUS
+odoo_demo1_havano_pro_pknuzuhckrvwadhoboithcke   Up 7 seconds
+

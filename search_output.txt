@@ -1,0 +1,220 @@
+﻿Total lines in chatbot_processor.py: 1698
+
+
+=== HUMAN / HANDOVER REFERENCES ===
+--- LINE 84 ---
+            profile_name = contacts[0].get('profile', {}).get('name', '') or ''
+       
+        # Pre-scan: if ANY message belongs to a handed-off session, fall through
+        # to stock so the human agent sees the message in Discuss. Webhooks
+        # typically deliver one message at a time, so this is an all-or-nothing
+        # decision per batch.
+        for msg in messages:
+            phone = self._normalize_phone(msg.get('from', ''))
+            if not phone:
+                continue
+            handed_off = self.env['wa.chatbot.session'].sudo().search([
+
+--- LINE 559 ---
+        return raw
+
+    def _extract_user_input(self, msg):
+        """Return a human-readable string for logging/variable substitution."""
+        mtype = msg.get('type', 'text')
+        if mtype == 'text':
+            return msg.get('text', {}).get('body', '')
+        if mtype == 'interactive':
+            interactive = msg.get('interactive', {})
+            itype = interactive.get('type', '')
+            if itype == 'button_reply':
+
+--- LINE 975 ---
+        if not records:
+            return _empty()
+
+        # Human-readable value dict per record
+        records_vals = [
+            {f: self._format_field_value(rec, f) for f in read_fields}
+            for rec in records
+        ]
+
+        out_vars = {found_var: 'true', count_var: str(len(records))}
+        result_text = ''
+
+--- LINE 1115 ---
+
+    @staticmethod
+    def _format_field_value(record, field_name):
+        """Return a human-readable value for one field on a single record."""
+        if field_name not in record._fields:
+            return ''
+        field = record._fields[field_name]
+        value = record[field_name]
+        if value is False or value is None:
+            return ''
+        ftype = field.type
+
+--- LINE 1266 ---
+    # =========================================================================
+
+    def _execute_handoff(self, session, cfg, account):
+        """Transfer the conversation to a human agent via a discuss.channel (whatsapp type)."""
+        phone = session.phone
+        chatbot = session.chatbot_id
+
+        # 1. Acknowledge to the WhatsApp user
+        try:
+            message = self._resolve_variables(session, cfg.get('message', '') or chatbot.handoff_message or '')
+            if message:
+
+--- LINE 1360 ---
+            'handoff_reason': reason,
+        })
+
+        self._log_session_message(session, 'system', 'Handed off to human agent', msg_type='system')
+
+    def _post_conversation_history(self, session, channel, partner, bot_partner):
+        """Post the entire chatbot conversation as internal notes in the Discuss channel.
+
+        Uses message_type='comment' with subtype mail.mt_note so the enterprise
+        whatsapp override (which sends outbound WA for message_type='whatsapp_message')
+        doesn't replay these messages back to Meta.
+
+
+
+=== SESSION EXPIRE / TIMEOUT / RESUME REFERENCES ===
+--- LINE 146 ---
+            return
+
+        # No session or expired/closed: try non-global keywords or default flow
+        if not session or session.state in ('expired', 'closed'):
+            keyword_match = self._check_keywords(chatbot, user_input, is_global=False)
+            if keyword_match:
+                self._handle_keyword_match(
+
+--- LINE 147 ---
+
+        # No session or expired/closed: try non-global keywords or default flow
+        if not session or session.state in ('expired', 'closed'):
+            keyword_match = self._check_keywords(chatbot, user_input, is_global=False)
+            if keyword_match:
+                self._handle_keyword_match(
+                    chatbot, None, phone, profile_name or phone,
+
+--- LINE 318 ---
+            elif unit == 'hours':
+                duration *= 3600
+            duration = min(duration, 30)  # cap to avoid webhook timeout
+            if duration > 0:
+                time.sleep(duration)
+            next_node = self._get_next_node(node, 'default')
+            if next_node:
+
+--- LINE 331 ---
+            if template_id:
+                template = self.env['whatsapp.template'].sudo().browse(template_id)
+                if template.exists() and template.status == 'approved':
+                    variable_mapping = cfg.get('variable_mapping', {})
+                    resolved = {}
+                    for pos, val in variable_mapping.items():
+                        # Odoo expects 'free_text_1' instead of just '1'
+
+--- LINE 515 ---
+        ])
+        if stale:
+            stale.write({'state': 'expired', 'ended_at': fields.Datetime.now()})
+
+        partner = self._find_partner(phone, profile_name)
+
+        session = Session.create({
+
+--- LINE 608 ---
+    def _handle_keyword_match(self, chatbot, session, phone, profile_name,
+                              keyword, user_input, account, wamid, msg_type):
+        if keyword.reset_session or not session:
+            if session and session.state in ('active', 'paused'):
+                session.write({'state': 'closed', 'ended_at': fields.Datetime.now()})
+            session = self._create_session(chatbot, phone, profile_name, account)
+
+
+--- LINE 1155 ---
+        Request URL, header values and JSON body values all support {{variable}}
+        substitution. The response is stored raw in `response_variable`, the HTTP
+        status in `api_status_code`, and any number of fields can be pulled out of
+        a JSON response into session variables via `response_mappings`.
+        """
+        url = self._resolve_variables(session, cfg.get('url', ''))
+        method = (cfg.get('method') or 'GET').upper()
+
+--- LINE 1167 ---
+            return False
+
+        # Cap the timeout so a slow endpoint can't tie up the webhook worker.
+        try:
+            timeout = min(max(int(cfg.get('timeout') or 10), 1), 30)
+        except (ValueError, TypeError):
+            timeout = 10
+
+--- LINE 1169 ---
+        # Cap the timeout so a slow endpoint can't tie up the webhook worker.
+        try:
+            timeout = min(max(int(cfg.get('timeout') or 10), 1), 30)
+        except (ValueError, TypeError):
+            timeout = 10
+
+        resolved_headers = {k.strip(): self._resolve_variables(session, str(v)) for k, v in headers.items()}
+
+--- LINE 1171 ---
+            timeout = min(max(int(cfg.get('timeout') or 10), 1), 30)
+        except (ValueError, TypeError):
+            timeout = 10
+
+        resolved_headers = {k.strip(): self._resolve_variables(session, str(v)) for k, v in headers.items()}
+        resolved_body = {k.strip(): self._resolve_variables(session, str(v)) for k, v in body_json.items()}
+
+
+--- LINE 1177 ---
+
+        try:
+            request_kwargs = {'headers': resolved_headers, 'timeout': timeout}
+            if method in ('POST', 'PUT', 'PATCH'):
+                request_kwargs['json'] = resolved_body
+            resp = req_lib.request(method, url, **request_kwargs)
+
+
+--- LINE 1182 ---
+            resp = req_lib.request(method, url, **request_kwargs)
+
+            # Expose the status code so a flow can branch beyond success/error.
+            session.set_variable('api_status_code', str(resp.status_code))
+
+            try:
+                response_data = resp.json()
+
+--- LINE 1183 ---
+
+            # Expose the status code so a flow can branch beyond success/error.
+            session.set_variable('api_status_code', str(resp.status_code))
+
+            try:
+                response_data = resp.json()
+                session.set_variable(response_variable, json.dumps(response_data))
+
+--- LINE 1195 ---
+            self._apply_response_list(session, cfg, response_data)
+
+            return resp.status_code < 400
+        except Exception as e:
+            _logger.warning("API call failed for session %s: %s", session.id, e)
+            session.set_variable(response_variable, str(e))
+            session.set_variable('api_status_code', '0')
+
+--- LINE 1199 ---
+            _logger.warning("API call failed for session %s: %s", session.id, e)
+            session.set_variable(response_variable, str(e))
+            session.set_variable('api_status_code', '0')
+            return False
+
+    def _apply_response_mappings(self, session, cfg, response_data):
+        """Set session variables from JSON paths in the API response.
+

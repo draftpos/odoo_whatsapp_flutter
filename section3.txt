@@ -1,0 +1,153 @@
+﻿=== _execute_handoff (lines 1260-1410) ===
+
+    # =========================================================================
+    # HANDOFF
+    # =========================================================================
+
+    def _execute_handoff(self, session, cfg, account):
+        """Transfer the conversation to a human agent via a discuss.channel (whatsapp type)."""
+        phone = session.phone
+        chatbot = session.chatbot_id
+
+        # 1. Acknowledge to the WhatsApp user
+        try:
+            message = self._resolve_variables(session, cfg.get('message', '') or chatbot.handoff_message or '')
+            if message:
+                wa_msg = send_helpers.send_text(self.env, account, phone, message, session=session)
+                self._log_session_message(session, 'outbound', message, wa_msg=wa_msg)
+        except Exception as e:
+            _logger.warning("Handoff: failed to send handoff message to user: %s", e)
+
+        # 2. Resolve the bot user: node ΓåÆ chatbot ΓåÆ account.notify_user_ids ΓåÆ admin
+        node = session.current_node_id
+        bot_user = (
+            node.user_id
+            or chatbot.user_id
+            or (account.notify_user_ids[:1] if account.notify_user_ids else False)
+            or self.env.ref('base.user_admin')
+        )
+        bot_partner = bot_user.partner_id
+        partner = session.partner_id
+
+        # 3. Find or create the whatsapp discuss channel using the enterprise helper.
+        #    The helper handles responsible-user assignment + whatsapp_partner_id creation.
+        Channel = self.env['discuss.channel'].sudo()
+        channel = Channel.search([
+            ('channel_type', '=', 'whatsapp'),
+            ('wa_account_id', '=', account.id),
+            ('whatsapp_number', '=', phone),
+        ], limit=1)
+        if not channel:
+            # Find the most recent inbound mail.message for this session to use
+            # as related_message so _get_whatsapp_channel can resolve record_name.
+            # Fall back to creating without a related_message to avoid AttributeError.
+            session_mail_msg = self.env['mail.message'].sudo().search([
+                ('model', '=', 'wa.chatbot.session'),
+                ('res_id', '=', session.id),
+            ], limit=1, order='id desc')
+            related_message = session_mail_msg if session_mail_msg else False
+            channel = Channel._get_whatsapp_channel(
+                whatsapp_number=phone,
+                wa_account_id=account,
+                sender_name=partner.name if partner else phone,
+                create_if_not_found=True,
+                related_message=related_message,
+            )
+
+        # Ensure bot partner is a member (the whatsapp_partner and responsibles
+        # are already added by _get_whatsapp_channel; we just add the chatbot owner).
+        if bot_partner and bot_partner not in channel.channel_member_ids.mapped('partner_id'):
+            channel.add_members(partner_ids=bot_partner.ids)
+
+        # 4. Tag the channel with chatbot context (our own fields from the inherit)
+        context_data = self._build_handoff_context(session, cfg)
+        partner_name = partner.name or phone
+        account_name = account.name or "WhatsApp"
+        new_name = f"{partner_name}({account_name})"
+
+        channel.write({
+            'name': new_name,
+            'chatbot_handoff': True,
+            'chatbot_session_id': session.id,
+            'chatbot_context': json.dumps(context_data, ensure_ascii=False),
+        })
+
+        # 5. Replay the conversation history as internal notes so the agent has
+        #    context. Using message_type='comment' + mail.mt_note keeps these
+        #    from triggering the enterprise whatsapp send path (which fires on
+        #    message_type='whatsapp_message').
+        try:
+            self._post_conversation_history(session, channel, partner, bot_partner)
+        except Exception as e:
+            _logger.exception("Handoff: failed to post conversation history: %s", e)
+
+        try:
+            summary_html = self._build_handoff_summary_html(session, cfg, context_data)
+            channel.message_post(
+                body=summary_html,
+                message_type='notification',
+                subtype_xmlid='mail.mt_note',
+            )
+        except Exception as e:
+            _logger.exception("Handoff: failed to post summary note: %s", e)
+
+        # 6. Update session state ΓÇö always runs, even if channel operations failed
+        reason = cfg.get('reason', '') or 'Chatbot handoff'
+        session.write({
+            'state': 'handed_off',
+            'handoff_channel_id': channel.id,
+            'handoff_reason': reason,
+        })
+
+        self._log_session_message(session, 'system', 'Handed off to human agent', msg_type='system')
+
+    def _post_conversation_history(self, session, channel, partner, bot_partner):
+        """Post the entire chatbot conversation as internal notes in the Discuss channel.
+
+        Uses message_type='comment' with subtype mail.mt_note so the enterprise
+        whatsapp override (which sends outbound WA for message_type='whatsapp_message')
+        doesn't replay these messages back to Meta.
+        """
+        all_logs = session.log_ids.sorted('timestamp')
+        if not all_logs:
+            return
+
+        for log in all_logs:
+            if log.direction == 'system':
+                continue
+            body = log.body or ''
+            if not body:
+                continue
+            is_customer = (log.direction == 'inbound')
+            author = partner if is_customer else bot_partner
+            prefix = 'Customer: ' if is_customer else 'Bot: '
+            try:
+                channel.message_post(
+                    body=f"{prefix}{body}",
+                    message_type='comment',
+                    subtype_xmlid='mail.mt_note',
+                    author_id=author.id if author else False,
+                )
+            except Exception as e:
+                _logger.warning("Handoff: failed to post log entry %s: %s", log.id, e)
+
+    def _build_handoff_context(self, session, cfg):
+        variables = session.get_variables()
+
+        duration_minutes = 0
+        if session.started_at:
+            delta = fields.Datetime.now() - session.started_at
+            duration_minutes = round(delta.total_seconds() / 60, 1)
+
+        context = {
+            'session_id': session.id,
+            'chatbot_name': session.chatbot_id.name or '',
+            'flow_name': session.current_flow_id.name if session.current_flow_id else '',
+            'phone': session.phone,
+            'contact_name': session.partner_id.name if session.partner_id else '',
+            'started_at': str(session.started_at) if session.started_at else '',
+            'duration_minutes': duration_minutes,
+            'message_count': session.message_count or 0,
+            'fallback_count': session.fallback_count or 0,
+            'handoff_reason': cfg.get('reason', '') or 'Chatbot handoff',
+

@@ -1,0 +1,11 @@
+﻿FIX 1: Found cron section ù patching wa_chatbot_session.py ...
+FIX 1: wa_chatbot_session.py patched successfully.
+
+FIX 2: Found pre-scan block ù patching chatbot_processor.py ...
+FIX 2: chatbot_processor.py patched successfully.
+
+Backup files: -rwxr-xr-x 1 root root 73761 Jul 31 09:04 /home/demo1_havano_pro_pknuzuhckrvwadhoboithcke/custom-addons/dev_whatsapp_chatbot_ent/models/chatbot_processor.py.bak
+-rwxr-xr-x 1 root root  8053 Jul 31 09:04 /home/demo1_havano_pro_pknuzuhckrvwadhoboithcke/custom-addons/dev_whatsapp_chatbot_ent/models/wa_chatbot_session.py.bak
+
+
+Done. Restart Odoo docker to apply: docker-compose restart odoo
