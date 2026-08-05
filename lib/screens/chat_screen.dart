@@ -249,17 +249,14 @@ class _ChatScreenState extends State<ChatScreen> {
         titleSpacing: 0,
         title: Row(
           children: [
-            widget.customerImage != null
-                ? CircleAvatar(
-                    radius: 18,
-                    backgroundImage: MemoryImage(base64Decode(widget.customerImage!)),
-                    backgroundColor: Colors.transparent,
-                  )
-                : const CircleAvatar(
-                    radius: 18,
-                    backgroundColor: Colors.white24,
-                    child: Icon(Icons.person, color: Colors.white),
-                  ),
+            CircleAvatar(
+              radius: 18,
+              backgroundColor: Colors.white24,
+              child: Text(
+                widget.channelName.isNotEmpty ? widget.channelName[0].toUpperCase() : '?',
+                style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+              ),
+            ),
             const SizedBox(width: 8),
             Expanded(
               child: Column(
@@ -396,7 +393,7 @@ class _ChatScreenState extends State<ChatScreen> {
                       } else if (author is List && author.isNotEmpty) {
                         isMe = author[0] == myPartnerId;
                       } else if (author == false) {
-                        isMe = true; // System or self
+                        isMe = false; // Unsaved numbers have no author, so it's from them
                       }
 
                       final bodyHtml = message['body'] as String? ?? '';

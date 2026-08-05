@@ -567,27 +567,17 @@ class _HomeScreenState extends State<HomeScreen> {
             final customerPhone = chat['customer_phone'] is String ? chat['customer_phone'] as String : null;
 
             return ListTile(
-              leading: customerImage != null
-                  ? CircleAvatar(
-                      backgroundImage: MemoryImage(base64Decode(customerImage)),
-                      backgroundColor: Colors.transparent,
-                    )
-                  : CircleAvatar(
-                      backgroundColor: isWhatsapp
-                          ? const Color(0xFF25D366)   // WhatsApp green
-                          : channelType == 'channel'
-                              ? const Color(0xFF1976D2)
-                              : Colors.grey.shade500,
-                      child: Icon(
-                        isWhatsapp
-                            ? Icons.phone_android
-                            : channelType == 'channel'
-                                ? Icons.group
-                                : Icons.chat_bubble,
-                        color: Colors.white,
-                        size: 20,
-                      ),
-                    ),
+              leading: CircleAvatar(
+                backgroundColor: isWhatsapp
+                    ? const Color(0xFF25D366)   // WhatsApp green
+                    : channelType == 'channel'
+                        ? const Color(0xFF1976D2)
+                        : Colors.grey.shade500,
+                child: Text(
+                  channelName.isNotEmpty ? channelName[0].toUpperCase() : '?',
+                  style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+                ),
+              ),
               title: Text(channelName,
                   style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
               subtitle: Text(subtitle,
