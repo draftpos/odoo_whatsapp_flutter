@@ -180,7 +180,27 @@ class _ChatScreenState extends State<ChatScreen> {
         .replaceAll(RegExp(r'</p>', caseSensitive: false), '\n\n')
         .replaceAll(RegExp(r'</li>', caseSensitive: false), '\n');
     RegExp exp = RegExp(r"<[^>]*>", multiLine: true, caseSensitive: true);
-    return processedHtml.replaceAll(exp, '').replaceAll('&nbsp;', ' ').trim();
+    processedHtml = processedHtml.replaceAll(exp, '').replaceAll('&nbsp;', ' ');
+    
+    // Decode common HTML entities
+    processedHtml = processedHtml
+        .replaceAll('&gt;', '>')
+        .replaceAll('&lt;', '<')
+        .replaceAll('&amp;', '&');
+        
+    String text = processedHtml.trim();
+    
+    // Remove legacy sender prefixes like ">Bot: ", ">Customer: ", or ">John Doe: "
+    final prefixMatch = RegExp(r'^>?[^:]+:\s*').firstMatch(text);
+    if (prefixMatch != null && prefixMatch.start == 0) {
+      // Check if it looks like a prefix
+      final prefix = text.substring(0, prefixMatch.end);
+      if (prefix.startsWith('>') || prefix.startsWith('Bot:') || prefix.startsWith('Customer:')) {
+        text = text.substring(prefixMatch.end);
+      }
+    }
+    
+    return text.trim();
   }
 
   String _channelAvatarUrl() {
@@ -297,7 +317,6 @@ class _ChatScreenState extends State<ChatScreen> {
           ],
         ),
         actions: [
-          IconButton(icon: const Icon(Icons.storefront), onPressed: _showCatalogue, tooltip: 'Catalogue'),
           IconButton(icon: const Icon(Icons.videocam), onPressed: () => _makeCall(true)),
           IconButton(icon: const Icon(Icons.call), onPressed: () => _makeCall(false)),
           PopupMenuButton<String>(
@@ -388,16 +407,29 @@ class _ChatScreenState extends State<ChatScreen> {
                       final author = message['author_id'];
                       
                       bool isMe = false;
+                      String authorName = "";
+                      if (author is List && author.length > 1) {
+                        authorName = author[1].toString().toLowerCase();
+                      }
+
                       if (message['isMe'] == true) {
                         isMe = true;
-                      } else if (author is List && author.isNotEmpty) {
-                        isMe = author[0] == myPartnerId;
+                      } else if (author is List && author.isNotEmpty && author[0] == myPartnerId) {
+                        isMe = true;
+                      } else if (authorName.contains('bot') || authorName == 'odoobot' || authorName == 'system') {
+                        isMe = true;
                       } else if (author == false) {
                         isMe = false; // Unsaved numbers have no author, so it's from them
                       }
 
                       final bodyHtml = message['body'] as String? ?? '';
                       final bodyText = _stripHtml(bodyHtml);
+
+                      if (bodyHtml.contains('>Bot: ') || bodyHtml.contains('&gt;Bot: ') || bodyText.startsWith('Bot: ')) {
+                          isMe = true;
+                      } else if (bodyHtml.contains('>Customer: ') || bodyHtml.contains('&gt;Customer: ') || bodyText.startsWith('Customer: ')) {
+                          isMe = false;
+                      }
 
                       String timeText = '';
                       if (message['date'] != null) {
@@ -560,10 +592,6 @@ class _ChatScreenState extends State<ChatScreen> {
                               ),
                               onSubmitted: (_) => _sendMessage(),
                             ),
-                          ),
-                          IconButton(
-                            icon: const Icon(Icons.store, color: Colors.grey),
-                            onPressed: _showCatalogue,
                           ),
                           IconButton(
                             icon: const Icon(Icons.attach_file, color: Colors.grey),

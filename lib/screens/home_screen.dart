@@ -510,6 +510,13 @@ class _HomeScreenState extends State<HomeScreen> {
           return true;
         }).toList();
 
+        // Sort chats so the newest message is on top
+        chats.sort((a, b) {
+          final dateA = a['last_message_date']?.toString() ?? '';
+          final dateB = b['last_message_date']?.toString() ?? '';
+          return dateB.compareTo(dateA); // Descending order
+        });
+
         if (chats.isEmpty) {
           return Center(
             child: Column(
@@ -607,6 +614,19 @@ class _HomeScreenState extends State<HomeScreen> {
                 ],
               ),
               onTap: () async {
+                final odooApi = Provider.of<OdooApi>(context, listen: false);
+                if (unreadCount > 0) {
+                  // Mark as read in Odoo
+                  odooApi.markChannelAsRead(channelId).then((_) {
+                    // Locally reset the counter so it feels instant
+                    if (mounted) {
+                      setState(() {
+                        chat['message_needaction_counter'] = 0;
+                      });
+                    }
+                  });
+                }
+
                 // Open chat within the app
                 Navigator.of(context).push(
                   MaterialPageRoute(

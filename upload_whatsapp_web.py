@@ -10,6 +10,11 @@ ssh.connect('161.97.114.200', username='root', password=pw)
 files_to_sync = [
     'whatsapp_web_chats/static/src/js/chats.js',
     'whatsapp_web_chats/static/src/xml/chats_template.xml',
+    'whatsapp_web_chats/static/src/css/chats.css',
+    'whatsapp_web_chats/models/whatsapp_account.py',
+    'whatsapp_web_chats/models/__init__.py',
+    'whatsapp_web_chats/models/mail_message.py',
+    'whatsapp_web_chats/models/whatsapp_message.py',
 ]
 
 REMOTE_BASE = '/home/demo1_havano_pro_pknuzuhckrvwadhoboithcke/custom-addons'

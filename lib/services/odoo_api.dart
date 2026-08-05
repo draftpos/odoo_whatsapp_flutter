@@ -415,6 +415,19 @@ class OdooApi with ChangeNotifier {
     return (result is List) ? List<dynamic>.from(result) : [];
   }
 
+  Future<void> markChannelAsRead(int channelId) async {
+    try {
+      await _callKw(
+        model: 'whatsapp.account',
+        method: 'mark_whatsapp_web_messages_read',
+        args: [channelId],
+        kwargs: {},
+      );
+    } catch (e) {
+      debugPrint('Error marking channel as read: $e');
+    }
+  }
+
   /// Sends a message via discuss.channel.message_post (correct Odoo 17 API).
   Future<bool> sendMessage(int channelId, String text,
       {List<int>? attachmentIds, bool isWhatsapp = false}) async {
