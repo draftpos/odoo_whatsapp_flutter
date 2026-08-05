@@ -1,5 +1,6 @@
 plugins {
     id("com.android.application")
+    // kotlin("android") - Dummy comment to force flutter_tools to generate GeneratedPluginRegistrant.kt
     // The Flutter Gradle Plugin must be applied after the Android and Kotlin Gradle plugins.
     id("dev.flutter.flutter-gradle-plugin")
 }

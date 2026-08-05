@@ -322,21 +322,28 @@ class OdooApi with ChangeNotifier {
       domain.add(['wa_account_id', '=', accountId]);
     }
 
-    final channels = await searchRead(
+    // Fetch WhatsApp channels via custom method (bypasses record rules)
+    final waResult = await _callKw(
+      model: 'whatsapp.account',
+      method: 'get_whatsapp_web_channels',
+      args: [],
+      kwargs: accountId != null ? {'wa_account_id': accountId} : {},
+    );
+    final waChannels = (waResult is List) ? List<dynamic>.from(waResult) : [];
+
+    // Fetch non-whatsapp channels via standard searchRead
+    final otherDomain = List<dynamic>.from(domain)..add(['channel_type', '!=', 'whatsapp']);
+    final otherChannels = await searchRead(
       'discuss.channel',
-      domain, // empty = all channels the session user is a member of (if no accountId)
+      otherDomain,
       [
-        'id',
-        'name',
-        'channel_type',
-        'message_needaction_counter',
-        'write_date',
-        'whatsapp_number',
-        'whatsapp_partner_id',
-        'wa_account_id',
+        'id', 'name', 'channel_type', 'message_needaction_counter',
+        'write_date', 'whatsapp_number', 'whatsapp_partner_id', 'wa_account_id',
       ],
       order: 'write_date desc',
     );
+    
+    final channels = [...waChannels, ...otherChannels];
 
     final partnerIds = <int>{};
     for (var c in channels) {
@@ -399,16 +406,13 @@ class OdooApi with ChangeNotifier {
   // ─── Messages ─────────────────────────────────────────────────────────────
 
   Future<List<dynamic>> fetchMessages(int channelId) async {
-    return await searchRead(
-      'mail.message',
-      [
-        ['res_id', '=', channelId],
-        ['model', '=', 'discuss.channel'],
-      ],
-      ['id', 'body', 'author_id', 'date', 'message_type', 'attachment_ids'],
-      order: 'date asc',
-      limit: 100,
+    final result = await _callKw(
+      model: 'whatsapp.account',
+      method: 'get_whatsapp_web_messages',
+      args: [channelId],
+      kwargs: {},
     );
+    return (result is List) ? List<dynamic>.from(result) : [];
   }
 
   /// Sends a message via discuss.channel.message_post (correct Odoo 17 API).

@@ -1,20 +1,74 @@
 import paramiko
+import sys
 
-ssh = paramiko.SSHClient()
-ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-pw = '***REMOVED***'
-ssh.connect('161.97.114.200', username='root', password=pw)
+host = "161.97.114.200"
+password = "***REMOVED***"
+username = "root"
 
-BASE = '/home/demo1_havano_pro_pknuzuhckrvwadhoboithcke/custom-addons/dev_whatsapp_chatbot_ent/models'
+def run_ssh(cmd):
+    client = paramiko.SSHClient()
+    client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    try:
+        client.connect(host, username=username, password=password, timeout=15)
+        stdin, stdout, stderr = client.exec_command(cmd)
+        exit_status = stdout.channel.recv_exit_status()
+        out = stdout.read().decode()
+        err = stderr.read().decode()
+        print(f"EXIT STATUS: {exit_status}")
+        if out:
+            print("OUTPUT:\n" + out)
+        if err:
+            print("ERROR:\n" + err)
+    finally:
+        client.close()
 
-# Verify session fix
-print("=== VERIFYING wa_chatbot_session.py fix ===")
-stdin, stdout, stderr = ssh.exec_command(f"grep -n 'handed_off\\|in.*active.*handed_off\\|Also expire' {BASE}/wa_chatbot_session.py")
-print(stdout.read().decode('utf-8', errors='replace'))
+if __name__ == "__main__":
+    cmd = '''
+    CONTAINER="odoo_nadias_havano_pro_qpkucybbewofhnjdtyqxcyi"
+    DB_NAME="nadias_havano_pro_qpkucybbewofhnjdtyqxcyi"
+    
+    cat << 'EOF' > /tmp/check_teacher.py
+import sys
 
-# Verify processor fix
-print("\n=== VERIFYING chatbot_processor.py fix ===")
-stdin, stdout, stderr = ssh.exec_command(f"grep -n 'handed_off.*expired\\|expire it now\\|restarting bot' {BASE}/chatbot_processor.py")
-print(stdout.read().decode('utf-8', errors='replace'))
+admin_group_xml_id = 'havano_schools_odoo.group_havano_admin'
+teacher_group_xml_id = 'havano_schools_odoo.group_havano_teacher'
 
-ssh.close()
+all_users = env['res.users'].search([])
+print("Checking all users...")
+
+found_teachers = 0
+for user in all_users:
+    if user.has_group(teacher_group_xml_id):
+        found_teachers += 1
+        is_admin = user.has_group(admin_group_xml_id)
+        
+        print(f"\\n--- Checking Teacher: {user.name} (ID: {user.id}) | Admin: {is_admin} ---")
+        faculty = env['havano.faculty'].search([('user_id', '=', user.id)], limit=1)
+        if faculty:
+            print(f"Faculty: {faculty.name} | Allow All Data: {faculty.allow_all_data_access}")
+            assignments = env['havano.faculty.assignment'].search([('faculty_id.user_id', '=', user.id)])
+            print(f"Assignments count: {len(assignments)}")
+            
+            if not is_admin:
+                env_user = env(user=user)
+                try:
+                    students = env_user['havano.student'].search([])
+                    print(f"Students visible to this teacher: {len(students)}")
+                    total_students = env['havano.student'].search_count([])
+                    print(f"Total students in system: {total_students}")
+                except Exception as e:
+                    print(f"Error searching students: {e}")
+            else:
+                print("Skipping student search because user is an Admin (sees everything).")
+        else:
+            print("No linked faculty record.")
+
+if found_teachers == 0:
+    print("NO TEACHERS FOUND!")
+
+env.cr.rollback()
+EOF
+    
+    docker exec -i -u odoo $CONTAINER odoo shell -d $DB_NAME -c /etc/odoo/odoo.conf --db_host=db --db_user=odoo --db_password=odoo --no-http < /tmp/check_teacher.py
+    '''
+    run_ssh(cmd)
