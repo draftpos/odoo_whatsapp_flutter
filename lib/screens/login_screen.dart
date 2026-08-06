@@ -20,6 +20,10 @@ class _LoginScreenState extends State<LoginScreen> {
   bool _isLoading = false;
   bool _obscurePassword = true;
 
+  List<String> _databases = [];
+  bool _fetchingDatabases = false;
+  String? _selectedDb;
+
   @override
   void initState() {
     super.initState();
@@ -33,13 +37,46 @@ class _LoginScreenState extends State<LoginScreen> {
     setState(() {
       _urlController.text =
           prefs.getString('odoo_url') ?? defaultOdooServerUrl;
-      _dbController.text =
-          prefs.getString('odoo_db') ?? '';
+      _selectedDb = prefs.getString('odoo_db');
+      if (_selectedDb != null && _selectedDb!.isEmpty) {
+        _selectedDb = null;
+      }
+      _dbController.text = _selectedDb ?? '';
     });
+    
+    _fetchDatabases();
+    _urlController.addListener(_onUrlChanged);
+  }
+
+  void _onUrlChanged() {
+    _fetchDatabases();
+  }
+
+  Future<void> _fetchDatabases() async {
+    final url = _urlController.text.trim();
+    if (url.isEmpty || !url.startsWith('http')) return;
+    
+    setState(() { _fetchingDatabases = true; });
+    final api = Provider.of<OdooApi>(context, listen: false);
+    final dbs = await api.fetchDatabases(url);
+    
+    if (mounted) {
+      setState(() {
+        _databases = dbs;
+        _fetchingDatabases = false;
+        if (_databases.isNotEmpty) {
+           if (_selectedDb == null || !_databases.contains(_selectedDb)) {
+             _selectedDb = _databases.first;
+             _dbController.text = _selectedDb!;
+           }
+        }
+      });
+    }
   }
 
   @override
   void dispose() {
+    _urlController.removeListener(_onUrlChanged);
     _urlController.dispose();
     _dbController.dispose();
     _usernameController.dispose();
@@ -171,21 +208,56 @@ class _LoginScreenState extends State<LoginScreen> {
                             ),
                           ),
                           const SizedBox(height: 12),
-                          TextField(
-                            controller: _dbController,
-                            autofillHints: const [AutofillHints.organizationName],
-                            decoration: InputDecoration(
-                              labelText: 'Database Name',
-                              labelStyle: const TextStyle(color: Color(0xFF1976D2)),
-                              prefixIcon: const Icon(Icons.storage, color: Colors.grey),
-                              border: OutlineInputBorder(
-                                borderRadius: BorderRadius.circular(8),
-                                borderSide: BorderSide.none,
+                          if (_databases.isNotEmpty)
+                            DropdownButtonFormField<String>(
+                              value: _selectedDb,
+                              isExpanded: true,
+                              decoration: InputDecoration(
+                                labelText: 'Database Name',
+                                labelStyle: const TextStyle(color: Color(0xFF1976D2)),
+                                prefixIcon: const Icon(Icons.storage, color: Colors.grey),
+                                border: OutlineInputBorder(
+                                  borderRadius: BorderRadius.circular(8),
+                                  borderSide: BorderSide.none,
+                                ),
+                                filled: true,
+                                fillColor: Colors.white,
                               ),
-                              filled: true,
-                              fillColor: Colors.white,
+                              items: _databases.map((db) {
+                                return DropdownMenuItem(
+                                  value: db,
+                                  child: Text(db, overflow: TextOverflow.ellipsis),
+                                );
+                              }).toList(),
+                              onChanged: (val) {
+                                setState(() {
+                                  _selectedDb = val;
+                                  _dbController.text = val ?? '';
+                                });
+                              },
+                            )
+                          else
+                            TextField(
+                              controller: _dbController,
+                              autofillHints: const [AutofillHints.organizationName],
+                              decoration: InputDecoration(
+                                labelText: 'Database Name',
+                                labelStyle: const TextStyle(color: Color(0xFF1976D2)),
+                                prefixIcon: const Icon(Icons.storage, color: Colors.grey),
+                                suffixIcon: _fetchingDatabases 
+                                  ? const Padding(
+                                      padding: EdgeInsets.all(12.0),
+                                      child: SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2)),
+                                    ) 
+                                  : null,
+                                border: OutlineInputBorder(
+                                  borderRadius: BorderRadius.circular(8),
+                                  borderSide: BorderSide.none,
+                                ),
+                                filled: true,
+                                fillColor: Colors.white,
+                              ),
                             ),
-                          ),
                         ],
                       ),
                     ),

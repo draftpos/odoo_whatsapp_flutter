@@ -1,3 +1,4 @@
+import os
 """
 Fix script for WhatsApp chatbot "Talk to Human" session expiry bug.
 
@@ -23,7 +24,7 @@ import paramiko
 
 ssh = paramiko.SSHClient()
 ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-pw = '***REMOVED***'
+pw = os.environ.get('SERVER_PASSWORD')
 ssh.connect('161.97.114.200', username='root', password=pw)
 
 BASE = '/home/demo1_havano_pro_pknuzuhckrvwadhoboithcke/custom-addons/dev_whatsapp_chatbot_ent/models'

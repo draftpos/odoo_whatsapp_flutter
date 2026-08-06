@@ -1,9 +1,10 @@
+import os
 import paramiko
 import json
 
 ssh = paramiko.SSHClient()
 ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-ssh.connect('161.97.114.200', username='root', password='***REMOVED***')
+ssh.connect('161.97.114.200', username='root', password=os.environ.get('SERVER_PASSWORD'))
 
 # Query to list databases
 stdin, stdout, stderr = ssh.exec_command("docker exec -i odoo_demo1_havano_pro_pknuzuhckrvwadhoboithcke psql -U odoo -l")

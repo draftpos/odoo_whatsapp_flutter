@@ -1,8 +1,9 @@
+import os
 import paramiko
 
 ssh = paramiko.SSHClient()
 ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-ssh.connect('161.97.114.200', username='root', password='***REMOVED***')
+ssh.connect('161.97.114.200', username='root', password=os.environ.get('SERVER_PASSWORD'))
 
 query = """
 SELECT id, mail_message_id, message_type, is_bot_message

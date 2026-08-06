@@ -1,8 +1,9 @@
+import os
 import paramiko
 
 ssh = paramiko.SSHClient()
 ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-ssh.connect('161.97.114.200', username='root', password='***REMOVED***', timeout=10)
+ssh.connect('161.97.114.200', username='root', password=os.environ.get('SERVER_PASSWORD'), timeout=10)
 
 cmd = """python3 -c "
 import xmlrpc.client

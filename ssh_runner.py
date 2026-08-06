@@ -1,3 +1,4 @@
+import os
 import sys
 import paramiko
 
@@ -5,7 +6,7 @@ def run_ssh_command(cmd):
     client = paramiko.SSHClient()
     client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
     try:
-        client.connect('nexas.havano.online', port=9419, username='frappe', password='***REMOVED***')
+        client.connect('nexas.havano.online', port=9419, username='frappe', password=os.environ.get('SERVER_PASSWORD'))
         # Load environment for bash if needed, or run from frappe-bench
         command = f"cd ~/frappe-bench && {cmd}"
         stdin, stdout, stderr = client.exec_command(command)

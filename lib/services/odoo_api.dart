@@ -25,6 +25,43 @@ class OdooApi with ChangeNotifier {
 
   Map<String, String> get _headers => {'Content-Type': 'application/json'};
 
+  Future<List<String>> fetchDatabases(String url) async {
+    final cleanUrl = url.endsWith('/') ? url.substring(0, url.length - 1) : url;
+    final requestUrl = Uri.parse('$cleanUrl/jsonrpc');
+    final body = {
+      'jsonrpc': '2.0',
+      'method': 'call',
+      'params': {
+        'service': 'db',
+        'method': 'list',
+        'args': []
+      },
+      'id': DateTime.now().millisecondsSinceEpoch,
+    };
+
+    try {
+      final client = createHttpClient();
+      try {
+        final response = await client.post(
+          requestUrl,
+          headers: {'Content-Type': 'application/json'},
+          body: json.encode(body),
+        );
+        if (response.statusCode == 200) {
+          final data = json.decode(response.body);
+          if (data['result'] is List) {
+            return List<String>.from(data['result']);
+          }
+        }
+      } finally {
+        client.close();
+      }
+    } catch (e) {
+      debugPrint('fetchDatabases error: $e');
+    }
+    return [];
+  }
+
   // ─── Auth ─────────────────────────────────────────────────────────────────
 
   Future<bool> login(String url, String db, String username, String password) async {

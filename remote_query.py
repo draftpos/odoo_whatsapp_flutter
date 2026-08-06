@@ -4,7 +4,7 @@ import paramiko
 def run_ssh_script():
     client = paramiko.SSHClient()
     client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-    client.connect('nexas.havano.online', port=9419, username='frappe', password='***REMOVED***')
+    client.connect('nexas.havano.online', port=9419, username='frappe', password=os.environ.get('SERVER_PASSWORD'))
     
     html_content = """<style>
 	.print-format table, .print-format tr, 

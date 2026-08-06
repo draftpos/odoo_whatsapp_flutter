@@ -1,8 +1,9 @@
+import os
 import paramiko
 
 ssh = paramiko.SSHClient()
 ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-ssh.connect('161.97.114.200', username='root', password='***REMOVED***')
+ssh.connect('161.97.114.200', username='root', password=os.environ.get('SERVER_PASSWORD'))
 
 # Execute odoo update command
 cmd = "docker exec -i odoo_demo1_havano_pro_pknuzuhckrvwadhoboithcke odoo -c /etc/odoo/odoo.conf -u whatsapp_web_chats -d demo1_havano_pro --stop-after-init --db_host db --db_user odoo --db_password odoo"
