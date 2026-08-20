@@ -1,20 +1,22 @@
-import os
 import paramiko
 
-ssh = paramiko.SSHClient()
-ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-pw = os.environ.get('SERVER_PASSWORD')
-ssh.connect('161.97.114.200', username='root', password=pw)
+host = "161.97.114.200"
+password = "Farai@#$1234"
+username = "root"
 
-stdin, stdout, stderr = ssh.exec_command('docker ps -a')
+client = paramiko.SSHClient()
+client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+client.connect(host, username=username, password=password, timeout=15)
+
+cmd = "docker ps -a | grep demo1"
+stdin, stdout, stderr = client.exec_command(cmd, timeout=60)
+out = stdout.read().decode()
+err = stderr.read().decode()
+
 print("STDOUT:")
-print(stdout.read().decode('utf-8'))
-print("STDERR:")
-print(stderr.read().decode('utf-8'))
+print(out)
+if err:
+    print("STDERR:")
+    print(err)
 
-# Restart db if it's down
-stdin, stdout, stderr = ssh.exec_command('docker restart db')
-print("Restarting DB:")
-print(stdout.read().decode('utf-8'))
-
-ssh.close()
+client.close()
