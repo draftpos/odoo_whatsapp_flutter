@@ -8,7 +8,7 @@ client = paramiko.SSHClient()
 client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
 client.connect(host, username=username, password=password, timeout=15)
 
-cmd = "docker ps -a | grep demo1"
+cmd = "docker exec odoo_demo1_havano_pro_pknuzuhckrvwadhoboithcke cat /etc/odoo/odoo.conf"
 stdin, stdout, stderr = client.exec_command(cmd, timeout=60)
 out = stdout.read().decode()
 err = stderr.read().decode()
