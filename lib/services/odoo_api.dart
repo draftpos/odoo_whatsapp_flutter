@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 
 import 'http_client_native.dart'
@@ -15,6 +16,8 @@ class OdooApi with ChangeNotifier {
   int? _uid;
   int? _partnerId; // partner linked to the logged-in user
   bool _isLead = false; // Is the logged-in user a lead?
+
+  final _secureStorage = const FlutterSecureStorage();
 
   bool get isLoggedIn => _uid != null && _password != null;
   String? get baseUrl => _baseUrl;
@@ -105,7 +108,7 @@ class OdooApi with ChangeNotifier {
             await prefs.setString('odoo_url', _baseUrl!);
             await prefs.setString('odoo_db', _db!);
             await prefs.setString('odoo_username', username);
-            await prefs.setString('odoo_password', password); // Store securely in production
+            await _secureStorage.write(key: 'odoo_password', value: password);
             await prefs.setInt('odoo_uid', _uid!);
 
             // Fetch partner ID
@@ -135,7 +138,7 @@ class OdooApi with ChangeNotifier {
     _partnerId = null;
     _isLead = false;
     final prefs = await SharedPreferences.getInstance();
-    await prefs.remove('odoo_password');
+    await _secureStorage.delete(key: 'odoo_password');
     await prefs.remove('odoo_uid');
     notifyListeners();
   }
