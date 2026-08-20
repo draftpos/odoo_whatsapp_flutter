@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../services/odoo_api.dart';
@@ -8,6 +9,7 @@ import 'settings_screen.dart';
 import 'linked_devices_screen.dart';
 import 'starred_messages_screen.dart';
 import 'contacts_selection_screen.dart';
+import 'package:flutter_contacts/flutter_contacts.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -22,11 +24,71 @@ class _HomeScreenState extends State<HomeScreen> {
   late Future<List<dynamic>> _contactsFuture;
   List<dynamic> _accounts = [];
   int? _selectedAccountId;
+  Timer? _pollingTimer;
+  final Set<int> _selectedChatIds = {};
 
   @override
   void initState() {
     super.initState();
     _loadInitialData();
+    _autoSyncContacts();
+    _startPolling();
+  }
+
+  void _startPolling() {
+    _pollingTimer = Timer.periodic(const Duration(seconds: 5), (timer) async {
+      if (!mounted) return;
+      try {
+        final api = Provider.of<OdooApi>(context, listen: false);
+        final accounts = await api.fetchAccounts();
+        if (mounted) {
+          setState(() {
+            _accounts = accounts;
+          });
+        }
+      } catch (e) {
+        debugPrint("Polling error: $e");
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    _pollingTimer?.cancel();
+    super.dispose();
+  }
+
+  Future<void> _autoSyncContacts() async {
+    try {
+      final status = await FlutterContacts.permissions.request(PermissionType.read);
+      if (status == PermissionStatus.granted || status == PermissionStatus.limited) {
+        final contacts = await FlutterContacts.getAll(
+          properties: {ContactProperty.phone},
+        );
+        
+        final contactsToSync = <Map<String, dynamic>>[];
+        for (var contact in contacts) {
+          if (contact.phones.isNotEmpty) {
+            contactsToSync.add({
+              'name': contact.displayName,
+              'phone': contact.phones.first.number,
+            });
+          }
+        }
+        
+        if (contactsToSync.isNotEmpty && mounted) {
+          final api = Provider.of<OdooApi>(context, listen: false);
+          await api.syncDeviceContacts(contactsToSync);
+          if (mounted) {
+            setState(() {
+              _contactsFuture = api.fetchContacts();
+            });
+          }
+        }
+      }
+    } catch (e) {
+      debugPrint("Auto-sync contacts error: $e");
+    }
   }
 
   Future<void> _loadInitialData() async {
@@ -55,6 +117,83 @@ class _HomeScreenState extends State<HomeScreen> {
     });
   }
 
+  Future<void> _deleteSelectedChats() async {
+    if (_selectedChatIds.isEmpty) return;
+    
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (BuildContext context) {
+        return AlertDialog(
+          title: const Text("Delete Chats"),
+          content: Text("Are you sure you want to permanently delete ${_selectedChatIds.length} chat(s) and all their messages?"),
+          actions: <Widget>[
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(false),
+              child: const Text("CANCEL"),
+            ),
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(true),
+              child: const Text("DELETE", style: TextStyle(color: Colors.red)),
+            ),
+          ],
+        );
+      },
+    );
+    
+    if (confirm != true) return;
+
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => const Center(child: CircularProgressIndicator(color: Color(0xFF1976D2))),
+    );
+
+    try {
+      final api = Provider.of<OdooApi>(context, listen: false);
+      bool allSuccess = true;
+      for (var id in _selectedChatIds) {
+        final success = await api.deleteWhatsAppChat(id);
+        if (!success) {
+          allSuccess = false;
+        }
+      }
+      
+      if (mounted) {
+        Navigator.pop(context); // close loading
+        if (allSuccess) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Chats deleted!')),
+          );
+        } else {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Failed to delete some chats')),
+          );
+        }
+        setState(() {
+          _selectedChatIds.clear();
+        });
+        _refreshChats();
+      }
+    } catch (e) {
+      if (mounted) {
+        Navigator.pop(context);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error: $e')),
+        );
+      }
+    }
+  }
+
+  void _onChatLongPress(int id) {
+    setState(() {
+      if (_selectedChatIds.contains(id)) {
+        _selectedChatIds.remove(id);
+      } else {
+        _selectedChatIds.add(id);
+      }
+    });
+  }
+
   @override
   Widget build(BuildContext context) {
     return DefaultTabController(
@@ -62,30 +201,39 @@ class _HomeScreenState extends State<HomeScreen> {
       initialIndex: 1,
       child: Scaffold(
         appBar: AppBar(
-          title: _accounts.isNotEmpty
-              ? DropdownButton<int>(
-                  value: _selectedAccountId,
-                  dropdownColor: Theme.of(context).primaryColor,
-                  icon: const Icon(Icons.arrow_drop_down, color: Colors.white),
-                  underline: const SizedBox(),
-                  style: const TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold),
-                  onChanged: (int? newValue) {
-                    if (newValue != null && newValue != _selectedAccountId) {
-                      setState(() {
-                        _selectedAccountId = newValue;
-                        _chatsFuture = Provider.of<OdooApi>(context, listen: false).fetchChats(accountId: _selectedAccountId);
-                      });
-                    }
-                  },
-                  items: _accounts.map<DropdownMenuItem<int>>((dynamic acc) {
-                    return DropdownMenuItem<int>(
-                      value: acc['id'] as int,
-                      child: Text(acc['name'] as String? ?? 'Account'),
-                    );
-                  }).toList(),
-                )
-              : const Text('Havano OdooWhatsapp'),
+          title: _selectedChatIds.isNotEmpty
+              ? Text('${_selectedChatIds.length} selected')
+              : _accounts.isNotEmpty
+                  ? DropdownButton<int>(
+                      value: _selectedAccountId,
+                      dropdownColor: Theme.of(context).primaryColor,
+                      icon: const Icon(Icons.arrow_drop_down, color: Colors.white),
+                      underline: const SizedBox(),
+                      style: const TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold),
+                      onChanged: (int? newValue) {
+                        if (newValue != null && newValue != _selectedAccountId) {
+                          setState(() {
+                            _selectedAccountId = newValue;
+                            _chatsFuture = Provider.of<OdooApi>(context, listen: false).fetchChats(accountId: _selectedAccountId);
+                          });
+                        }
+                      },
+                      items: _accounts.map<DropdownMenuItem<int>>((dynamic acc) {
+                        return DropdownMenuItem<int>(
+                          value: acc['id'] as int,
+                          child: Text(acc['name'] as String? ?? 'Account'),
+                        );
+                      }).toList(),
+                    )
+                  : const Text('Havano OdooWhatsapp'),
           actions: [
+            if (_selectedChatIds.isNotEmpty)
+              IconButton(
+                icon: const Icon(Icons.delete),
+                tooltip: 'Delete Selected',
+                onPressed: _deleteSelectedChats,
+              )
+            else ...[
             IconButton(
               icon: const Icon(Icons.search),
               onPressed: () {
@@ -130,6 +278,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 }).toList();
               },
             ),
+            ],
           ],
           bottom: TabBar(
             indicatorColor: Colors.white,
@@ -150,27 +299,30 @@ class _HomeScreenState extends State<HomeScreen> {
                     }
                     
                     if (unreadChats > 0) {
-                      return Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          const Text('CHATS'),
-                          const SizedBox(width: 6),
-                          Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                            decoration: const BoxDecoration(
-                              color: Colors.white,
-                              borderRadius: BorderRadius.all(Radius.circular(10)),
-                            ),
-                            child: Text(
-                              unreadChats.toString(),
-                              style: TextStyle(
-                                color: Theme.of(context).primaryColor, 
-                                fontSize: 11,
-                                fontWeight: FontWeight.bold,
+                      return FittedBox(
+                        fit: BoxFit.scaleDown,
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            const Text('CHATS'),
+                            const SizedBox(width: 4),
+                            Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
+                              decoration: const BoxDecoration(
+                                color: Colors.white,
+                                borderRadius: BorderRadius.all(Radius.circular(10)),
+                              ),
+                              child: Text(
+                                unreadChats.toString(),
+                                style: TextStyle(
+                                  color: Theme.of(context).primaryColor, 
+                                  fontSize: 11,
+                                  fontWeight: FontWeight.bold,
+                                ),
                               ),
                             ),
-                          ),
-                        ],
+                          ],
+                        ),
                       );
                     }
                     return const Text('CHATS');
@@ -297,7 +449,6 @@ class _HomeScreenState extends State<HomeScreen> {
                                     children: [
                                       Text(p['name'].toString(), maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontWeight: FontWeight.bold)),
                                       const SizedBox(height: 4),
-                                      Text('\$${(p['list_price'] ?? 0.0).toString()}', style: TextStyle(color: Colors.green.shade700)),
                                     ],
                                   ),
                                 ),
@@ -512,8 +663,8 @@ class _HomeScreenState extends State<HomeScreen> {
 
         // Sort chats so the newest message is on top
         chats.sort((a, b) {
-          final dateA = a['last_message_date']?.toString() ?? '';
-          final dateB = b['last_message_date']?.toString() ?? '';
+          final dateA = a['write_date']?.toString() ?? '';
+          final dateB = b['write_date']?.toString() ?? '';
           return dateB.compareTo(dateA); // Descending order
         });
 
@@ -534,9 +685,12 @@ class _HomeScreenState extends State<HomeScreen> {
           );
         }
 
-        return ListView.builder(
-          itemCount: chats.length,
-          itemBuilder: (context, index) {
+        return Column(
+          children: [
+            Expanded(
+              child: ListView.builder(
+                itemCount: chats.length,
+                itemBuilder: (context, index) {
             final chat = chats[index];
             final channelId = chat['id'] as int;
             final channelName = chat['name'] as String? ?? 'Unknown Chat';
@@ -545,10 +699,27 @@ class _HomeScreenState extends State<HomeScreen> {
             final whatsappNumber = chat['whatsapp_number'] is String ? chat['whatsapp_number'] as String : null;
             final isWhatsapp = channelType == 'whatsapp';
 
+            final waBotState = chat['wa_bot_state'] as String?;
+            final waDepartment = chat['wa_department'] as String?;
+            final waAgent = chat['wa_agent_id'] is List && (chat['wa_agent_id'] as List).length > 1 
+                ? (chat['wa_agent_id'] as List)[1] as String 
+                : null;
+            
+            String routingStatus = '';
+            if (waBotState == 'routed') {
+               if (waAgent != null) {
+                  routingStatus = ' • Routed to $waAgent';
+               } else if (waDepartment != null) {
+                  routingStatus = ' • Routed to $waDepartment';
+               }
+            } else if (waBotState == 'ask_department' || waBotState == 'ask_agent') {
+               routingStatus = ' • Bot routing...';
+            }
+
             final subtitle = channelType == 'channel'
                     ? 'Group channel'
                     : isWhatsapp && whatsappNumber != null && whatsappNumber.isNotEmpty
-                        ? 'WhatsApp: $whatsappNumber'
+                        ? 'WhatsApp: $whatsappNumber$routingStatus'
                         : 'Tap to open chat';
 
             // Format write_date to a readable time
@@ -556,12 +727,16 @@ class _HomeScreenState extends State<HomeScreen> {
             String timeStr = '';
             if (rawDate != null && rawDate != false) {
               try {
-                final dt = DateTime.parse(rawDate.toString()).toLocal();
+                String dateStr = rawDate.toString();
+                if (!dateStr.endsWith('Z')) {
+                  dateStr = dateStr.replaceAll(' ', 'T') + 'Z';
+                }
+                final dt = DateTime.parse(dateStr).toLocal();
                 final now = DateTime.now();
                 final diff = now.difference(dt);
                 if (diff.inMinutes < 60) {
                   timeStr = '${diff.inMinutes}m ago';
-                } else if (diff.inHours < 24) {
+                } else if (diff.inHours < 24 && now.day == dt.day) {
                   timeStr =
                       '${dt.hour.toString().padLeft(2, '0')}:${dt.minute.toString().padLeft(2, '0')}';
                 } else {
@@ -573,18 +748,83 @@ class _HomeScreenState extends State<HomeScreen> {
             final customerImage = chat['customer_image'] is String ? chat['customer_image'] as String : null;
             final customerPhone = chat['customer_phone'] is String ? chat['customer_phone'] as String : null;
 
-            return ListTile(
-              leading: CircleAvatar(
-                backgroundColor: isWhatsapp
-                    ? const Color(0xFF25D366)   // WhatsApp green
-                    : channelType == 'channel'
-                        ? const Color(0xFF1976D2)
-                        : Colors.grey.shade500,
-                child: Text(
-                  channelName.isNotEmpty ? channelName[0].toUpperCase() : '?',
-                  style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
-                ),
+            return Dismissible(
+              key: Key('chat_$channelId'),
+              direction: DismissDirection.endToStart,
+              background: Container(
+                alignment: Alignment.centerRight,
+                padding: const EdgeInsets.only(right: 20.0),
+                color: Colors.red,
+                child: const Icon(Icons.delete, color: Colors.white),
               ),
+              confirmDismiss: (direction) async {
+                return await showDialog(
+                  context: context,
+                  builder: (BuildContext context) {
+                    return AlertDialog(
+                      title: const Text("Delete Chat"),
+                      content: const Text("Are you sure you want to permanently delete this chat and all its messages?"),
+                      actions: <Widget>[
+                        TextButton(
+                          onPressed: () => Navigator.of(context).pop(false),
+                          child: const Text("CANCEL"),
+                        ),
+                        TextButton(
+                          onPressed: () => Navigator.of(context).pop(true),
+                          child: const Text("DELETE", style: TextStyle(color: Colors.red)),
+                        ),
+                      ],
+                    );
+                  },
+                );
+              },
+              onDismissed: (direction) async {
+                final odooApi = Provider.of<OdooApi>(context, listen: false);
+                final success = await odooApi.deleteWhatsAppChat(channelId);
+                if (success) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text('Chat deleted')),
+                  );
+                  if (mounted) {
+                    setState(() {
+                      chats.removeAt(index);
+                    });
+                  }
+                } else {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text('Failed to delete chat')),
+                  );
+                  _refreshChats();
+                }
+              },
+              child: ListTile(
+                leading: Stack(
+                  children: [
+                    CircleAvatar(
+                      backgroundColor: isWhatsapp
+                          ? const Color(0xFF25D366)   // WhatsApp green
+                          : channelType == 'channel'
+                              ? const Color(0xFF1976D2)
+                              : Colors.grey.shade500,
+                      child: Text(
+                        channelName.isNotEmpty ? channelName[0].toUpperCase() : '?',
+                        style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+                      ),
+                    ),
+                    if (_selectedChatIds.contains(channelId))
+                      Positioned(
+                        bottom: 0,
+                        right: 0,
+                        child: Container(
+                          decoration: const BoxDecoration(
+                            color: Color(0xFF1976D2),
+                            shape: BoxShape.circle,
+                          ),
+                          child: const Icon(Icons.check, color: Colors.white, size: 16),
+                        ),
+                      ),
+                  ],
+                ),
               title: Text(channelName,
                   style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
               subtitle: Text(subtitle,
@@ -614,6 +854,11 @@ class _HomeScreenState extends State<HomeScreen> {
                 ],
               ),
               onTap: () async {
+                if (_selectedChatIds.isNotEmpty) {
+                  _onChatLongPress(channelId);
+                  return;
+                }
+
                 final odooApi = Provider.of<OdooApi>(context, listen: false);
                 if (unreadCount > 0) {
                   // Mark as read in Odoo
@@ -637,15 +882,21 @@ class _HomeScreenState extends State<HomeScreen> {
                       isWhatsapp: isWhatsapp,
                       customerImage: customerImage,
                       customerPhone: customerPhone,
+                      routingStatus: routingStatus,
                       waAccountId: chat['wa_account_id'] != null && chat['wa_account_id'].isNotEmpty ? chat['wa_account_id'][0] as int : null,
                     ),
                   ),
                 ).then((_) => _refreshChats());
               },
+              onLongPress: () => _onChatLongPress(channelId),
+            ),
             );
           },
-        );
-      },
+        ),
+      ),
+    ],
+  );
+},
     );
   }
 }
@@ -719,6 +970,7 @@ class _ChatSearchDelegate extends SearchDelegate {
                       channelName: channelName,
                       contactName: channelName,
                       customerPhone: chat['customer_phone'] as String?,
+                      routingStatus: '', // Skip for search since we don't have it easily without adding it to the search API response handling
                     ),
                   ),
                 );

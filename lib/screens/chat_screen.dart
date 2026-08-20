@@ -6,6 +6,7 @@ import 'package:file_picker/file_picker.dart';
 import 'dart:convert';
 import 'login_screen.dart';
 import 'package:url_launcher/url_launcher.dart';
+import 'contact_info_screen.dart';
 
 class ChatScreen extends StatefulWidget {
   final int channelId;
@@ -16,6 +17,7 @@ class ChatScreen extends StatefulWidget {
   final String? customerImage;
   final String? customerPhone;
   final int? waAccountId;
+  final String? routingStatus;
 
   const ChatScreen({
     super.key,
@@ -27,6 +29,7 @@ class ChatScreen extends StatefulWidget {
     this.customerImage,
     this.customerPhone,
     this.waAccountId,
+    this.routingStatus,
   });
 
   @override
@@ -44,6 +47,8 @@ class _ChatScreenState extends State<ChatScreen> {
   Timer? _refreshTimer;
   int? _currentAccountId;
   List<dynamic> _accounts = [];
+  final Set<int> _selectedMessageIds = {};
+  final Set<int> _seenWaErrors = {};
 
   @override
   void initState() {
@@ -79,7 +84,115 @@ class _ChatScreenState extends State<ChatScreen> {
         setState(() {
           _currentMessages = msgs;
         });
+        
+        // Check for new WhatsApp delivery errors
+        bool scrolled = false;
+        for (var msg in msgs) {
+          final waError = msg['wa_error'];
+          if (waError != null && waError is String && waError.isNotEmpty) {
+            final errorId = msg['wa_error_msg_id'] ?? msg['id'];
+            if (!_seenWaErrors.contains(errorId)) {
+              _seenWaErrors.add(errorId);
+              
+              // Only alert if the message was sent recently (last 2 mins)
+              try {
+                String dateStr = msg['date'] ?? '';
+                if (!dateStr.endsWith('Z')) dateStr += 'Z';
+                final msgDate = DateTime.parse(dateStr);
+                if (DateTime.now().toUtc().difference(msgDate).inMinutes < 2) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(
+                      content: Text('WhatsApp Delivery Failed:\n$waError'),
+                      backgroundColor: Colors.red.shade700,
+                      duration: const Duration(seconds: 5),
+                    ),
+                  );
+                }
+              } catch (_) {}
+            }
+          }
+        }
+        
         _scrollToBottom();
+      }
+    });
+  }
+
+  Future<void> _deleteSelectedMessages() async {
+    if (_selectedMessageIds.isEmpty) return;
+    
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (BuildContext context) {
+        return AlertDialog(
+          title: const Text("Delete Messages"),
+          content: Text("Are you sure you want to permanently delete ${_selectedMessageIds.length} message(s)?"),
+          actions: <Widget>[
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(false),
+              child: const Text("CANCEL"),
+            ),
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(true),
+              child: const Text("DELETE", style: TextStyle(color: Colors.red)),
+            ),
+          ],
+        );
+      },
+    );
+    
+    if (confirm != true) return;
+
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => const Center(child: CircularProgressIndicator(color: Color(0xFF1976D2))),
+    );
+
+    try {
+      final api = Provider.of<OdooApi>(context, listen: false);
+      bool allSuccess = true;
+      for (var id in _selectedMessageIds) {
+        if (id == 0) continue; // skip temp messages
+        final success = await api.deleteWhatsAppMessage(id);
+        if (!success) {
+          allSuccess = false;
+        }
+      }
+      
+      if (mounted) {
+        Navigator.pop(context); // close loading
+        if (allSuccess) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Messages deleted!')),
+          );
+        } else {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Failed to delete some messages. (You can only delete your own recent messages)')),
+          );
+        }
+        setState(() {
+          _selectedMessageIds.clear();
+        });
+        _loadMessages();
+      }
+    } catch (e) {
+      if (mounted) {
+        Navigator.pop(context);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error: $e')),
+        );
+      }
+    }
+  }
+
+  void _onMessageLongPress(int id) {
+    if (id == 0) return; // Cannot select temp messages
+    setState(() {
+      if (_selectedMessageIds.contains(id)) {
+        _selectedMessageIds.remove(id);
+      } else {
+        _selectedMessageIds.add(id);
       }
     });
   }
@@ -207,6 +320,51 @@ class _ChatScreenState extends State<ChatScreen> {
     return 'https://ui-avatars.com/api/?name=${Uri.encodeComponent(widget.contactName)}&background=random';
   }
 
+  bool get _isWithin24hWindow {
+    if (_currentMessages.isEmpty) return false;
+    final myPartnerId = Provider.of<OdooApi>(context, listen: false).partnerId;
+    
+    for (var i = _currentMessages.length - 1; i >= 0; i--) {
+      final msg = _currentMessages[i];
+      final author = msg['author_id'];
+      
+      bool isMe = msg['isMe'] == true;
+      String authorName = "";
+      if (author is List && author.length > 1) {
+        authorName = author[1].toString().toLowerCase();
+      }
+      if (!isMe && author is List && author.isNotEmpty && author[0] == myPartnerId) {
+        isMe = true;
+      } else if (!isMe && (authorName.contains('bot') || authorName == 'odoobot' || authorName == 'system')) {
+        isMe = true;
+      }
+      
+      final bodyHtml = msg['body'] as String? ?? '';
+      final bodyText = _stripHtml(bodyHtml);
+      if (bodyHtml.contains('>Bot: ') || bodyText.startsWith('Bot: ')) {
+          isMe = true;
+      } else if (bodyHtml.contains('>Customer: ') || bodyText.startsWith('Customer: ')) {
+          isMe = false;
+      }
+
+      if (!isMe) {
+        // This is a customer message
+        String? dateStr = msg['date'];
+        if (dateStr != null) {
+          if (!dateStr.endsWith('Z')) dateStr += 'Z';
+          try {
+            final date = DateTime.parse(dateStr);
+            if (DateTime.now().toUtc().difference(date).inHours < 24) {
+              return true;
+            }
+          } catch (e) {}
+        }
+        return false;
+      }
+    }
+    return false;
+  }
+
   Future<void> _makeCall(bool isVideo) async {
     if (widget.customerPhone != null && widget.customerPhone!.isNotEmpty) {
       final url = Uri.parse('tel:${widget.customerPhone}');
@@ -251,11 +409,23 @@ class _ChatScreenState extends State<ChatScreen> {
       isScrollControlled: true,
       builder: (BuildContext context) {
         return _TemplatesSheet(
-          onTemplateSelected: (template) {
-            String text = template['body'] as String? ?? '';
-            text = text.replaceAll(RegExp(r'\{\{\d+\}\}'), '');
-            _messageController.text = text;
+          onTemplateSelected: (template) async {
             Navigator.pop(context);
+            final templateId = template['id'] as int?;
+            if (templateId == null) return;
+            
+            final odooApi = Provider.of<OdooApi>(context, listen: false);
+            bool success = await odooApi.sendWhatsappTemplate(widget.channelId, templateId);
+            
+            if (success) {
+              _loadMessages();
+            } else {
+              if (mounted) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(content: Text('Failed to send template')),
+                );
+              }
+            }
           },
         );
       },
@@ -266,96 +436,94 @@ class _ChatScreenState extends State<ChatScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        titleSpacing: 0,
-        title: Row(
-          children: [
-            CircleAvatar(
-              radius: 18,
-              backgroundColor: Colors.white24,
-              child: Text(
-                widget.channelName.isNotEmpty ? widget.channelName[0].toUpperCase() : '?',
-                style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
-              ),
-            ),
-            const SizedBox(width: 8),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    widget.channelName,
-                    style: const TextStyle(fontSize: 16),
-                  ),
-                  const Text('Online', style: TextStyle(fontSize: 12, color: Colors.white70)),
-                ],
-              ),
-            ),
-            if (_accounts.isNotEmpty)
-              DropdownButtonHideUnderline(
-                child: DropdownButton<int>(
-                  value: _currentAccountId,
-                  icon: const Icon(Icons.arrow_drop_down, color: Colors.white),
-                  dropdownColor: Theme.of(context).primaryColor,
-                  style: const TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.bold),
-                  onChanged: (int? newValue) {
-                    if (newValue != null && newValue != _currentAccountId) {
-                      setState(() {
-                        _currentAccountId = newValue;
-                        // Ideally, we'd update the wa_account_id on the Odoo backend here
-                        // For now, we update the UI to show the selected account
-                      });
-                    }
-                  },
-                  items: _accounts.map<DropdownMenuItem<int>>((dynamic acc) {
-                    return DropdownMenuItem<int>(
-                      value: acc['id'] as int,
-                      child: Text(acc['name'] as String? ?? 'Account'),
-                    );
-                  }).toList(),
+        title: _selectedMessageIds.isNotEmpty
+            ? Text('${_selectedMessageIds.length} selected')
+            : GestureDetector(
+                onTap: () {
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (_) => ContactInfoScreen(
+                        channelId: widget.channelId,
+                        contactName: widget.contactName,
+                        customerPhone: widget.customerPhone,
+                        customerImage: widget.customerImage,
+                      ),
+                    ),
+                  );
+                },
+                child: Row(
+                  children: [
+                    CircleAvatar(
+                      backgroundImage: widget.customerImage != null ? NetworkImage('data:image/jpeg;base64,${widget.customerImage}') : NetworkImage(_channelAvatarUrl()),
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(widget.contactName, style: const TextStyle(fontSize: 16)),
+                          if (widget.customerPhone != null && widget.customerPhone!.isNotEmpty)
+                            Text(
+                              '${widget.customerPhone!}${widget.routingStatus != null && widget.routingStatus!.isNotEmpty ? widget.routingStatus : ''}', 
+                              style: const TextStyle(fontSize: 12, color: Colors.white70)
+                            ),
+                        ],
+                      ),
+                    ),
+                  ],
                 ),
               ),
-          ],
-        ),
+        backgroundColor: const Color(0xFF128C7E),
+        foregroundColor: Colors.white,
         actions: [
-          IconButton(icon: const Icon(Icons.videocam), onPressed: () => _makeCall(true)),
-          IconButton(icon: const Icon(Icons.call), onPressed: () => _makeCall(false)),
-          PopupMenuButton<String>(
-            onSelected: (value) async {
-              if (value == 'Logout') {
-                await Provider.of<OdooApi>(context, listen: false).logout();
-                if (mounted) {
-                  Navigator.of(context).pushAndRemoveUntil(
-                    MaterialPageRoute(builder: (_) => const LoginScreen()),
-                    (Route<dynamic> route) => false,
+          if (_selectedMessageIds.isNotEmpty)
+            IconButton(
+              icon: const Icon(Icons.delete),
+              tooltip: 'Delete Selected',
+              onPressed: _deleteSelectedMessages,
+            )
+          else ...[
+            IconButton(icon: const Icon(Icons.videocam), onPressed: () => _makeCall(true)),
+            IconButton(icon: const Icon(Icons.call), onPressed: () => _makeCall(false)),
+            PopupMenuButton<String>(
+              onSelected: (value) async {
+                if (value == 'Logout') {
+                  await Provider.of<OdooApi>(context, listen: false).logout();
+                  if (mounted) {
+                    Navigator.of(context).pushAndRemoveUntil(
+                      MaterialPageRoute(builder: (_) => const LoginScreen()),
+                      (Route<dynamic> route) => false,
+                    );
+                  }
+                } else {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(content: Text('$value tapped (Coming soon)')),
                   );
                 }
-              } else {
-                ScaffoldMessenger.of(context).showSnackBar(
-                  SnackBar(content: Text('$value tapped (Coming soon)')),
-                );
-              }
-            },
-            itemBuilder: (BuildContext context) {
-              final options = [
-                'View contact',
-                'Media, links, and docs',
-                'Search',
-                'Mute notifications',
-                'Disappearing messages',
-                'Wallpaper',
-                'More'
-              ];
-              if (widget.isHomeScreen) {
-                options.add('Logout');
-              }
-              return options.map((String choice) {
-                return PopupMenuItem<String>(
-                  value: choice,
-                  child: Text(choice),
-                );
-              }).toList();
-            },
-          ),
+              },
+              itemBuilder: (BuildContext context) {
+                final options = [
+                  'View contact',
+                  'Media, links, and docs',
+                  'Search',
+                  'Mute notifications',
+                  'Disappearing messages',
+                  'Wallpaper',
+                  'More'
+                ];
+                if (widget.isHomeScreen) {
+                  options.add('Logout');
+                }
+                return options.map((String choice) {
+                  return PopupMenuItem<String>(
+                    value: choice,
+                    child: Text(choice),
+                  );
+                }).toList();
+              },
+            ),
+          ],
         ],
       ),
       body: Container(
@@ -401,15 +569,18 @@ class _ChatScreenState extends State<ChatScreen> {
                     padding: const EdgeInsets.all(8),
                     itemCount: _currentMessages.length,
                     itemBuilder: (context, index) {
-                      // Odoo returns newest messages first or last depending on search. 
-                      // Usually we might need to reverse, but let's stick to current order.
                       final message = _currentMessages[index];
                       final author = message['author_id'];
                       
                       bool isMe = false;
                       String authorName = "";
+                      String authorNameDisplay = "";
                       if (author is List && author.length > 1) {
                         authorName = author[1].toString().toLowerCase();
+                        authorNameDisplay = author[1].toString();
+                        if (authorName.contains('bot') || authorName == 'odoobot' || authorName == 'system') {
+                          authorNameDisplay = 'Bot';
+                        }
                       }
 
                       if (message['isMe'] == true) {
@@ -419,13 +590,14 @@ class _ChatScreenState extends State<ChatScreen> {
                       } else if (authorName.contains('bot') || authorName == 'odoobot' || authorName == 'system') {
                         isMe = true;
                       } else if (author == false) {
-                        isMe = false; // Unsaved numbers have no author, so it's from them
+                        isMe = false; 
                       }
 
                       final bodyHtml = message['body'] as String? ?? '';
                       final bodyText = _stripHtml(bodyHtml);
+                      bool isBot = bodyHtml.contains('>Bot: ') || bodyHtml.contains('&gt;Bot: ') || bodyText.startsWith('Bot: ');
 
-                      if (bodyHtml.contains('>Bot: ') || bodyHtml.contains('&gt;Bot: ') || bodyText.startsWith('Bot: ')) {
+                      if (isBot) {
                           isMe = true;
                       } else if (bodyHtml.contains('>Customer: ') || bodyHtml.contains('&gt;Customer: ') || bodyText.startsWith('Customer: ')) {
                           isMe = false;
@@ -434,9 +606,8 @@ class _ChatScreenState extends State<ChatScreen> {
                       String timeText = '';
                       if (message['date'] != null) {
                         try {
-                           // Odoo dates are UTC string like "2024-07-24 10:00:00"
                            String dateStr = message['date'];
-                           if (!dateStr.endsWith('Z')) dateStr += 'Z'; // Force UTC parsing
+                           if (!dateStr.endsWith('Z')) dateStr += 'Z';
                            final dt = DateTime.parse(dateStr).toLocal();
                            final hour = dt.hour > 12 ? dt.hour - 12 : (dt.hour == 0 ? 12 : dt.hour);
                            final ampm = dt.hour >= 12 ? 'PM' : 'AM';
@@ -447,62 +618,89 @@ class _ChatScreenState extends State<ChatScreen> {
                         }
                       }
 
-                      // Read status (mock for now if Odoo doesn't provide read receipts)
-                      final bool isRead = true; // Could map to some Odoo field later
+                      final bool isRead = true; 
 
-                      return Align(
-                        alignment: isMe ? Alignment.centerRight : Alignment.centerLeft,
+                      return GestureDetector(
+                        onLongPress: () => _onMessageLongPress(message['id'] as int? ?? 0),
+                        onTap: () {
+                          if (_selectedMessageIds.isNotEmpty) {
+                            _onMessageLongPress(message['id'] as int? ?? 0);
+                          }
+                        },
                         child: Container(
-                          margin: const EdgeInsets.symmetric(vertical: 4),
-                          constraints: BoxConstraints(
-                            maxWidth: MediaQuery.of(context).size.width * 0.75,
-                          ),
-                          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-                          decoration: BoxDecoration(
-                            color: isMe ? const Color(0xFFDCF8C6) : Colors.white, // WhatsApp green/blue style for sender
-                            borderRadius: BorderRadius.only(
-                              topLeft: const Radius.circular(12),
-                              topRight: const Radius.circular(12),
-                              bottomLeft: isMe ? const Radius.circular(12) : const Radius.circular(0),
-                              bottomRight: isMe ? const Radius.circular(0) : const Radius.circular(12),
-                            ),
-                            boxShadow: [
-                              BoxShadow(
-                                color: Colors.black.withOpacity(0.1),
-                                blurRadius: 2,
-                                offset: const Offset(0, 1),
-                              ),
-                            ],
-                          ),
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Text(
-                                bodyText,
-                                style: const TextStyle(fontSize: 15, color: Colors.black87),
-                              ),
-                              if (message['attachment_ids'] != null && (message['attachment_ids'] as List).isNotEmpty)
-                                ...((message['attachment_ids'] as List).map((id) => AttachmentView(attachmentId: id as int)).toList()),
-                              const SizedBox(height: 2),
-                              Row(
+                          color: _selectedMessageIds.contains(message['id'] as int? ?? 0)
+                              ? Colors.blue.withOpacity(0.3)
+                              : Colors.transparent,
+                          child: Align(
+                            alignment: isMe ? Alignment.centerRight : Alignment.centerLeft,
+                            child: Padding(
+                              padding: const EdgeInsets.symmetric(horizontal: 8.0, vertical: 4.0),
+                              child: Row(
                                 mainAxisSize: MainAxisSize.min,
-                                mainAxisAlignment: MainAxisAlignment.end,
+                                crossAxisAlignment: CrossAxisAlignment.end,
                                 children: [
-                                  Text(
-                                    timeText, 
-                                    style: TextStyle(fontSize: 11, color: Colors.grey.shade600),
-                                  ),
-                                  if (isMe) ...[
-                                    const SizedBox(width: 4),
-                                    Icon(
-                                      isRead ? Icons.done_all : Icons.done, 
-                                      size: 14, 
-                                      color: isRead ? Colors.blue : Colors.grey
+                                  if (!isMe)
+                                    CircleAvatar(
+                                      radius: 16,
+                                      backgroundImage: NetworkImage('https://ui-avatars.com/api/?name=${Uri.encodeComponent(isBot ? "Bot" : widget.contactName)}&background=random'),
+                                      backgroundColor: Colors.transparent,
                                     ),
-                                  ]
+                                  if (!isMe) const SizedBox(width: 8),
+                                  Flexible(
+                                    child: Container(
+                                      constraints: BoxConstraints(
+                                        maxWidth: MediaQuery.of(context).size.width * 0.75,
+                                      ),
+                                      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                                      decoration: BoxDecoration(
+                                        color: isMe ? const Color(0xFFDCF8C6) : Colors.white,
+                                        borderRadius: BorderRadius.only(
+                                          topLeft: const Radius.circular(12),
+                                          topRight: const Radius.circular(12),
+                                          bottomLeft: isMe ? const Radius.circular(12) : const Radius.circular(0),
+                                          bottomRight: isMe ? const Radius.circular(0) : const Radius.circular(12),
+                                        ),
+                                      ),
+                                      child: Column(
+                                        crossAxisAlignment: CrossAxisAlignment.start,
+                                        children: [
+                                          Text(
+                                            bodyText,
+                                            style: const TextStyle(fontSize: 15, color: Colors.black87),
+                                          ),
+                                          if (message['attachment_ids'] != null && (message['attachment_ids'] as List).isNotEmpty)
+                                            ...((message['attachment_ids'] as List).map((id) => AttachmentView(attachmentId: id as int)).toList()),
+                                          const SizedBox(height: 2),
+                                          Row(
+                                            mainAxisSize: MainAxisSize.min,
+                                            mainAxisAlignment: MainAxisAlignment.end,
+                                            children: [
+                                              if (isMe && authorNameDisplay.isNotEmpty)
+                                                Text(
+                                                  '[$authorNameDisplay] ', 
+                                                  style: TextStyle(fontSize: 11, color: Colors.grey.shade600),
+                                                ),
+                                              Text(
+                                                timeText, 
+                                                style: TextStyle(fontSize: 11, color: Colors.grey.shade600),
+                                              ),
+                                              if (isMe) ...[
+                                                const SizedBox(width: 4),
+                                                Icon(
+                                                  isRead ? Icons.done_all : Icons.done, 
+                                                  size: 14, 
+                                                  color: isRead ? Colors.blue : Colors.grey
+                                                ),
+                                              ]
+                                            ],
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                  ),
                                 ],
                               ),
-                            ],
+                            ),
                           ),
                         ),
                       );
@@ -566,57 +764,82 @@ class _ChatScreenState extends State<ChatScreen> {
                    ],
                  ),
                ),
-             Container(
-               padding: const EdgeInsets.all(8),
-               color: Colors.transparent,
-               child: Row(
-                children: [
-                  Expanded(
-                    child: Container(
-                      decoration: BoxDecoration(
-                        color: Colors.white,
-                        borderRadius: BorderRadius.circular(24),
-                      ),
-                      child: Row(
-                        children: [
-                          IconButton(
-                            icon: const Icon(Icons.add, color: Colors.grey),
-                            onPressed: _showTemplates,
-                          ),
-                          Expanded(
-                            child: TextField(
-                              controller: _messageController,
-                              decoration: const InputDecoration(
-                                hintText: 'Message',
-                                border: InputBorder.none,
-                              ),
-                              onSubmitted: (_) => _sendMessage(),
+             if (_isWithin24hWindow)
+               Container(
+                 padding: const EdgeInsets.all(8),
+                 color: Colors.transparent,
+                 child: Row(
+                  children: [
+                    Expanded(
+                      child: Container(
+                        decoration: BoxDecoration(
+                          color: Colors.white,
+                          borderRadius: BorderRadius.circular(24),
+                        ),
+                        child: Row(
+                          children: [
+                            IconButton(
+                              icon: const Icon(Icons.add, color: Colors.grey),
+                              onPressed: _showTemplates,
                             ),
-                          ),
-                          IconButton(
-                            icon: const Icon(Icons.attach_file, color: Colors.grey),
-                            onPressed: _pickFile,
-                          ),
-                          IconButton(
-                            icon: const Icon(Icons.camera_alt, color: Colors.grey),
-                            onPressed: _pickImage,
-                          ),
-                        ],
+                            Expanded(
+                              child: TextField(
+                                controller: _messageController,
+                                decoration: const InputDecoration(
+                                  hintText: 'Message',
+                                  border: InputBorder.none,
+                                ),
+                                onSubmitted: (_) => _sendMessage(),
+                              ),
+                            ),
+                            IconButton(
+                              icon: const Icon(Icons.attach_file, color: Colors.grey),
+                              onPressed: _pickFile,
+                            ),
+                            IconButton(
+                              icon: const Icon(Icons.camera_alt, color: Colors.grey),
+                              onPressed: _pickImage,
+                            ),
+                          ],
+                        ),
                       ),
                     ),
-                  ),
-                  const SizedBox(width: 8),
-                  CircleAvatar(
-                    radius: 24,
-                    backgroundColor: const Color(0xFF1976D2),
-                    child: IconButton(
-                      icon: const Icon(Icons.send, color: Colors.white),
-                      onPressed: _sendMessage,
+                    const SizedBox(width: 8),
+                    CircleAvatar(
+                      radius: 24,
+                      backgroundColor: const Color(0xFF1976D2),
+                      child: IconButton(
+                        icon: const Icon(Icons.send, color: Colors.white),
+                        onPressed: _sendMessage,
+                      ),
                     ),
-                  ),
-                ],
-              ),
-            ),
+                  ],
+                ),
+              )
+             else
+               Container(
+                 padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                 color: Colors.transparent,
+                 child: SizedBox(
+                   width: double.infinity,
+                   child: ElevatedButton.icon(
+                     onPressed: _showTemplates,
+                     icon: const Icon(Icons.description, color: Colors.white),
+                     label: const Text(
+                       'Send Template to Start Chat',
+                       style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16, color: Colors.white),
+                     ),
+                     style: ElevatedButton.styleFrom(
+                       backgroundColor: const Color(0xFF00A884),
+                       padding: const EdgeInsets.symmetric(vertical: 16),
+                       shape: RoundedRectangleBorder(
+                         borderRadius: BorderRadius.circular(24),
+                       ),
+                       elevation: 2,
+                     ),
+                   ),
+                 ),
+               ),
           ],
         ),
       ),

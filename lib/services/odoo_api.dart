@@ -341,11 +341,101 @@ class OdooApi with ChangeNotifier {
       return await searchRead(
         'whatsapp.account',
         [],
-        ['id', 'name', 'image_1920'],
+        ['id', 'name', 'image_1920', 'wa_bot_active'],
       );
     } catch (e) {
       debugPrint('Error fetching accounts: $e');
       return [];
+    }
+  }
+
+  Future<bool> toggleAccountBot(int accountId, bool active) async {
+    try {
+      final result = await _callKw(
+        model: 'whatsapp.account',
+        method: 'toggle_account_bot',
+        args: [accountId, active],
+        kwargs: {},
+      );
+      return result == true;
+    } catch (e) {
+      debugPrint('Error toggling account bot: $e');
+      return false;
+    }
+  }
+
+  Future<bool> deleteWhatsAppChat(int channelId) async {
+    try {
+      final result = await _callKw(
+        model: 'whatsapp.account',
+        method: 'delete_whatsapp_chat',
+        args: [channelId],
+        kwargs: {},
+      );
+      if (result is Map && result['success'] == true) {
+        return true;
+      }
+      return false;
+    } catch (e) {
+      debugPrint('Error deleting chat: $e');
+      return false;
+    }
+  }
+
+  Future<bool> deleteWhatsAppMessage(int messageId) async {
+    try {
+      final result = await _callKw(
+        model: 'whatsapp.account',
+        method: 'delete_whatsapp_message',
+        args: [messageId],
+        kwargs: {},
+      );
+      if (result is Map && result['success'] == true) {
+        return true;
+      }
+      return false;
+    } catch (e) {
+      debugPrint('Error deleting message: $e');
+      return false;
+    }
+  }
+
+  Future<bool> syncDeviceContacts(List<Map<String, dynamic>> contacts) async {
+    try {
+      final result = await _callKw(
+        model: 'whatsapp.account',
+        method: 'sync_device_contacts',
+        args: [contacts],
+        kwargs: {},
+      );
+      if (result is Map && result['success'] == true) {
+        return true;
+      }
+      return false;
+    } catch (e) {
+      debugPrint('Error syncing contacts: $e');
+      return false;
+    }
+  }
+
+  Future<int?> syncSingleContactAndGetId(String name, String phone) async {
+    try {
+      final result = await _callKw(
+        model: 'whatsapp.account',
+        method: 'sync_device_contacts',
+        args: [[{'name': name, 'phone': phone}]],
+        kwargs: {},
+      );
+      if (result is Map && result['success'] == true) {
+        final contacts = result['contacts'] as List<dynamic>?;
+        if (contacts != null && contacts.isNotEmpty) {
+          return contacts[0]['id'] as int;
+        }
+      }
+      return null;
+    } catch (e) {
+      debugPrint('Error syncing single contact: $e');
+      return null;
     }
   }
 
@@ -486,7 +576,41 @@ class OdooApi with ChangeNotifier {
     return result != null;
   }
 
+  Future<bool> sendWhatsappTemplate(int channelId, int templateId) async {
+    try {
+      final result = await _callKw(
+        model: 'whatsapp.account',
+        method: 'send_whatsapp_template',
+        args: [channelId, templateId],
+        kwargs: {},
+      );
+      if (result != null && result is Map && result['success'] == true) {
+        return true;
+      }
+    } catch (e) {
+      debugPrint('Error sending template: $e');
+    }
+    return false;
+  }
+
   // ─── Direct chat ──────────────────────────────────────────────────────────
+
+  Future<bool> updateContactName(int channelId, String newName) async {
+    try {
+      final result = await _callKw(
+        model: 'whatsapp.account',
+        method: 'update_contact_name',
+        args: [channelId, newName],
+        kwargs: {},
+      );
+      if (result != null && result is Map && result['success'] == true) {
+        return true;
+      }
+    } catch (e) {
+      debugPrint('Error updating contact name: $e');
+    }
+    return false;
+  }
 
   Future<Map<String, dynamic>?> getOrCreateDirectChat(int partnerIdVal) async {
     if (_partnerId == null) return null;
@@ -596,6 +720,16 @@ class OdooApi with ChangeNotifier {
       order: 'name asc',
       limit: 100,
     );
+  }
+  
+  // ─── Delete Contacts ────────────────────────────────────────────────────────
+  Future<bool> deleteContacts(List<int> contactIds) async {
+    final result = await _callKw(
+      model: 'res.partner',
+      method: 'unlink',
+      args: [contactIds],
+    );
+    return result == true;
   }
 }
 
